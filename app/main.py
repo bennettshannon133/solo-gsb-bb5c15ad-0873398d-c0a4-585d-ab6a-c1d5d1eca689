@@ -21,6 +21,7 @@ from .aligner import align, manual_record, split_paragraphs
 from .citations import REF_TYPE_LABEL, scan_citations
 from .database import db, citation_row_to_dict, indices_to_str, row_to_dict
 from .migration import MIGRATION_STATUS_LABEL, analyze_migration
+from .obligations import VERDICT_LABEL, analyze_obligations
 from .schemas import (
     AlignmentCreate,
     AlignmentPatch,
@@ -625,6 +626,158 @@ def export_citation_migrations(
         ])
     data = b"\xef\xbb\xbf" + buf.getvalue().encode("utf-8")
     fname = f"regreview-citation-migrations-{doc_id}-{stamp}.csv"
+    return Response(content=data, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f"attachment; filename={fname}"})
+
+
+# ---------------- 责任矩阵 ----------------
+
+def _obligation_result(conn, doc_id: int) -> dict:
+    """即时计算责任矩阵（映射调整、重新对齐后再次调用即自动重算，不落库）。"""
+    old, new = _load_paragraphs(conn, doc_id)
+    aligns = [row_to_dict(r) for r in conn.execute(
+        "SELECT * FROM alignments WHERE document_id=? ORDER BY id", (doc_id,)
+    ).fetchall()]
+    return analyze_obligations(old, new, aligns)
+
+
+def _filter_obligation_items(items: list[dict], verdict: str | None,
+                             modal: str | None, keyword: str | None) -> list[dict]:
+    kw = keyword.strip().lower() if keyword else ""
+    out = []
+    for it in items:
+        if verdict and it["verdict"] != verdict:
+            continue
+        if modal and not ((it["old"] and it["old"]["modal"] == modal)
+                          or (it["new"] and it["new"]["modal"] == modal)):
+            continue
+        if kw:
+            blob = it["reason"] + " "
+            for c in it.get("old_candidates", []) + it.get("new_candidates", []):
+                blob += c["why"] + " "
+            for side in (it["old"], it["new"]):
+                if side:
+                    blob += (side["subject"] or "") + " " + side["action"] + " "
+                    blob += (side["time_limit"] or "") + " " + side["clause_text"] + " "
+            if kw not in blob.lower():
+                continue
+        out.append(it)
+    return out
+
+
+@app.get("/api/documents/{doc_id}/obligations")
+def list_obligations(
+    doc_id: int,
+    verdict: str | None = Query(
+        None,
+        pattern="^(added|removed|strengthened|weakened|forbid_relaxed|changed|unchanged|review)$"),
+    modal: str | None = Query(None, pattern="^(shall|must|forbid|may)$"),
+    keyword: str | None = None,
+):
+    """责任矩阵：两版条款义务项的组内保守配对与判定（即时计算）。
+
+    仅在旧/新均非空的 1:1 段落映射组内按主体+行为相似度配对；
+    拆分/合并组、主体缺失、候选并列一律不强行匹配，列为待核验并给出候选与原因。
+    """
+    with db() as conn:
+        doc = _get_doc_or_404(conn, doc_id)
+        result = _obligation_result(conn, doc_id)
+        old_paras = [r[0] for r in conn.execute(
+            "SELECT content FROM paragraphs WHERE document_id=? AND side='old' ORDER BY idx",
+            (doc_id,)).fetchall()]
+        new_paras = [r[0] for r in conn.execute(
+            "SELECT content FROM paragraphs WHERE document_id=? AND side='new' ORDER BY idx",
+            (doc_id,)).fetchall()]
+    items = _filter_obligation_items(result["items"], verdict, modal, keyword)
+    return {
+        "document_id": doc_id,
+        "title": doc["title"],
+        "counts": result["counts"],
+        "total": result["total"],
+        "verdict_labels": result["verdict_labels"],
+        "modal_labels": result["modal_labels"],
+        "group_labels": result["group_labels"],
+        "rules": result["rules"],
+        "old_paragraphs": old_paras,
+        "new_paragraphs": new_paras,
+        "items": items,
+    }
+
+
+@app.get("/api/documents/{doc_id}/obligations-export")
+def export_obligations(
+    doc_id: int,
+    verdict: str | None = Query(
+        None,
+        pattern="^(added|removed|strengthened|weakened|forbid_relaxed|changed|unchanged|review)$"),
+    modal: str | None = Query(None, pattern="^(shall|must|forbid|may)$"),
+    keyword: str | None = None,
+):
+    """导出当前责任矩阵结果 CSV（UTF-8 BOM，Excel 可直接打开）。
+
+    按当前 判定/情态/关键字 筛选导出；每行含两版主体、情态、行为、时限、
+    两版依据原文、判定、相似度、候选与不配对原因。
+    """
+    with db() as conn:
+        _get_doc_or_404(conn, doc_id)
+        result = _obligation_result(conn, doc_id)
+    rows = _filter_obligation_items(result["items"], verdict, modal, keyword)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "序号", "判定", "映射组", "映射类型",
+        "旧版位置", "旧版主体", "旧版情态", "旧版行为", "旧版时限", "旧版依据原文",
+        "新版位置", "新版主体", "新版情态", "新版行为", "新版时限", "新版依据原文",
+        "主体相似度", "行为相似度", "综合相似度",
+        "候选及不配对原因", "判定说明",
+    ])
+
+    def side_cells(ob):
+        if ob is None:
+            return ["", "", "", "", "", ""]
+        if ob["subject"]:
+            subj = ob["subject"]
+        else:
+            subj = "（主体缺失" + ("·同句承前失败" if ob["subject_inherited"] else "") + "）"
+        return [
+            ob["location"], subj, ob["modal_text"],
+            ob["action"], ob["time_limit"], ob["clause_text"],
+        ]
+
+    for i, it in enumerate(rows, 1):
+        old_c = side_cells(it["old"])
+        new_c = side_cells(it["new"])
+        cand_lines = []
+        for c in it.get("old_candidates", []):
+            ob = c["obligation"]
+            cand_lines.append(
+                f"[新版候选｜{ob['location']}] {ob['subject'] or '（主体缺失）'}"
+                f" {ob['modal_text']}{ob['action']}"
+                f"（主体 {c['subject_sim']:.0%} / 行为 {c['action_sim']:.0%} / "
+                f"综合 {c['score']:.0%}）— {c['why']}")
+        for c in it.get("new_candidates", []):
+            ob = c["obligation"]
+            cand_lines.append(
+                f"[旧版候选｜{ob['location']}] {ob['subject'] or '（主体缺失）'}"
+                f" {ob['modal_text']}{ob['action']}"
+                f"（主体 {c['subject_sim']:.0%} / 行为 {c['action_sim']:.0%} / "
+                f"综合 {c['score']:.0%}）— {c['why']}")
+        writer.writerow([
+            i,
+            VERDICT_LABEL[it["verdict"]],
+            f"对齐记录 #{it['alignment_id']}",
+            result["group_labels"].get(it["group_change_type"], it["group_change_type"]),
+            *old_c,
+            *new_c,
+            "" if it["subject_sim"] is None else f"{it['subject_sim']:.2f}",
+            "" if it["action_sim"] is None else f"{it['action_sim']:.2f}",
+            "" if it["score"] is None else f"{it['score']:.2f}",
+            "\n".join(cand_lines),
+            it["reason"],
+        ])
+    data = b"\xef\xbb\xbf" + buf.getvalue().encode("utf-8")
+    fname = f"regreview-obligations-{doc_id}-{stamp}.csv"
     return Response(content=data, media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
 

@@ -413,3 +413,76 @@ textarea { resize: vertical; min-height: 260px; font-family: ui-monospace, "SFMo
   .mig-grid { grid-template-columns: 1fr; }
 }
 
+/* ---------- 责任矩阵 ---------- */
+.modal-wide { width: min(1040px, 100%); }
+
+.chip.obl-chip.all { background: var(--unchanged-soft); color: var(--unchanged); }
+.chip.obl-chip.obl-added { background: var(--new-soft); color: var(--new); }
+.chip.obl-chip.obl-removed { background: var(--old-soft); color: var(--old); }
+.chip.obl-chip.obl-strengthened { background: var(--warn-soft); color: var(--warn); }
+.chip.obl-chip.obl-weakened { background: var(--blue-soft); color: var(--blue); }
+.chip.obl-chip.obl-forbid_relaxed { background: var(--purple-soft); color: var(--purple); }
+.chip.obl-chip.obl-changed { background: var(--multi-soft); color: var(--multi); }
+.chip.obl-chip.obl-unchanged { background: var(--unchanged-soft); color: var(--unchanged); }
+.chip.obl-chip.obl-review { background: var(--old-soft); color: var(--old); }
+
+.obl-card { border-left-width: 4px; }
+.obl-card.obl-v-added { border-left-color: var(--new); }
+.obl-card.obl-v-removed { border-left-color: var(--old); }
+.obl-card.obl-v-strengthened { border-left-color: var(--warn); }
+.obl-card.obl-v-weakened { border-left-color: var(--blue); }
+.obl-card.obl-v-forbid_relaxed { border-left-color: var(--purple); }
+.obl-card.obl-v-changed { border-left-color: var(--multi); }
+.obl-card.obl-v-unchanged { border-left-color: var(--unchanged); }
+.obl-card.obl-v-review { border-left-color: var(--old); }
+
+.cite-badge.obl-badge.obl-v-added { background: var(--new-soft); color: var(--new); }
+.cite-badge.obl-badge.obl-v-removed { background: var(--old-soft); color: var(--old); }
+.cite-badge.obl-badge.obl-v-strengthened { background: var(--warn-soft); color: var(--warn); }
+.cite-badge.obl-badge.obl-v-weakened { background: var(--blue-soft); color: var(--blue); }
+.cite-badge.obl-badge.obl-v-forbid_relaxed { background: var(--purple-soft); color: var(--purple); }
+.cite-badge.obl-badge.obl-v-changed { background: var(--multi-soft); color: var(--multi); }
+.cite-badge.obl-badge.obl-v-unchanged { background: var(--unchanged-soft); color: var(--unchanged); }
+.cite-badge.obl-badge.obl-v-review { background: var(--old-soft); color: var(--old); }
+
+.cite-badge.modal-shall { background: var(--blue-soft); color: var(--blue); }
+.cite-badge.modal-must { background: var(--warn-soft); color: var(--warn); }
+.cite-badge.modal-forbid { background: var(--old-soft); color: var(--old); }
+.cite-badge.modal-may { background: var(--new-soft); color: var(--new); }
+
+.obl-grid { grid-template-columns: 1fr 1fr; }
+.obl-side { padding: 10px 12px; }
+.obl-side.obl-old-box { background: var(--old-soft); border-color: #fecaca; }
+.obl-side.obl-old-box h4 { color: var(--old); }
+.obl-side.obl-new-box { background: var(--new-soft); border-color: #bbf7d0; }
+.obl-side.obl-new-box h4 { color: var(--new); }
+.obl-line { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; font-size: 13px; }
+.obl-k {
+  flex: 0 0 34px; font-size: 11px; font-weight: 700; color: var(--muted);
+  background: #f3f4f6; border-radius: 4px; text-align: center; padding: 1px 0;
+}
+.obl-subj { font-weight: 700; }
+.obl-missing { color: var(--old); font-weight: 600; font-size: 12.5px; }
+.obl-act { white-space: pre-wrap; word-break: break-word; }
+.obl-time { color: var(--warn); font-weight: 600; }
+.obl-modal {
+  padding: 1px 8px; border-radius: 4px; font-size: 12px; font-weight: 700;
+}
+.obl-modal.modal-shall { background: var(--blue-soft); color: var(--blue); }
+.obl-modal.modal-must { background: var(--warn-soft); color: var(--warn); }
+.obl-modal.modal-forbid { background: var(--old-soft); color: var(--old); }
+.obl-modal.modal-may { background: var(--new-soft); color: var(--new); }
+.obl-inh { font-size: 10px; font-weight: 400; opacity: .8; }
+.obl-none { color: var(--muted); font-style: italic; }
+
+.obl-cands {
+  margin: 0 18px 12px; border: 1px dashed #fcd34d; background: var(--warn-soft);
+  border-radius: 8px; padding: 8px 12px;
+}
+.obl-cands-title { font-size: 12.5px; font-weight: 700; color: var(--warn); margin-bottom: 4px; }
+.obl-cands .target-unit { background: #fff; border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+.obl-cands .target-unit.ineligible { opacity: .7; }
+.obl-score { color: var(--accent); font-weight: 400; font-size: 11.5px; }
+.cand-why { font-size: 12px; color: var(--muted); }
+
+
