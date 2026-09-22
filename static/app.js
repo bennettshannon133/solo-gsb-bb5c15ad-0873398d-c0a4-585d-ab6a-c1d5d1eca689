@@ -10,10 +10,14 @@ const DECISION_LABEL = {
 };
 const CITE_STATUS_LABEL = { ok: "正常", missing: "缺失", ambiguous: "歧义" };
 const MIG_STATUS_LABEL = { migrated: "已迁移", suspected: "疑似错指", review: "待核验" };
+const RM_JUDGMENT_LABEL = {
+  added: "新增", removed: "移除", strengthened: "加强", weakened: "弱化",
+  relaxed: "禁止放宽", changed: "内容变化", review: "待核验",
+};
 
 const state = {
   view: "list",           // list | upload | workspace
-  tab: "align",           // align | citations | migrations
+  tab: "align",           // align | citations | migrations | matrix
   doc: null,              // 当前文档详情
   cit: null,              // 引用检查数据 {check, items, new_paragraphs, ref_type_labels}
   citStatus: "",          // 引用检查状态筛选 ok|missing|ambiguous
@@ -23,6 +27,10 @@ const state = {
   migStatus: "",          // 迁移三态筛选 migrated|suspected|review
   migType: "",            // 迁移引用类型筛选
   migKw: "",              // 迁移关键字
+  rm: null,               // 责任矩阵数据
+  rmStatus: "",           // 矩阵判定筛选 added|removed|strengthened|weakened|relaxed|changed|review
+  rmModal: "",            // 矩阵情态词筛选 应当|必须|不得|可以
+  rmKw: "",               // 矩阵关键字
   filterType: "",         // 变更类型筛选
   filterDecision: "",     // 决定筛选
   search: "",
@@ -185,6 +193,10 @@ async function openDoc(id) {
   state.migStatus = "";
   state.migType = "";
   state.migKw = "";
+  state.rm = null;
+  state.rmStatus = "";
+  state.rmModal = "";
+  state.rmKw = "";
   state.filterType = "";
   state.filterDecision = "";
   state.search = "";
@@ -212,10 +224,17 @@ async function loadMigrations() {
   } catch (e) { toast(e.message, true); state.mig = null; }
 }
 
+async function loadMatrix() {
+  try {
+    state.rm = await api(`/api/documents/${state.doc.id}/obligations`);
+  } catch (e) { toast(e.message, true); state.rm = null; }
+}
+
 async function switchTab(tab) {
   state.tab = tab;
   if (tab === "citations" && !state.cit) await loadCitations();
   if (tab === "migrations" && !state.mig) await loadMigrations();
+  if (tab === "matrix" && !state.rm) await loadMatrix();
   renderWorkspace();
 }
 
@@ -249,6 +268,15 @@ function renderWorkspace() {
             ? h("span", { class: "tab-count warn" },
                 `待核验 ${state.mig.counts.review + state.mig.counts.suspected}`)
             : h("span", { class: "tab-count ok" }, `${state.mig.counts.migrated} 已迁移`))
+        : null),
+    h("button", {
+      class: `tab ${state.tab === "matrix" ? "active" : ""}`,
+      onclick: () => switchTab("matrix"),
+    }, "责任矩阵",
+      state.rm
+        ? (state.rm.counts.review
+            ? h("span", { class: "tab-count warn" }, `待核验 ${state.rm.counts.review}`)
+            : h("span", { class: "tab-count ok" }, `${state.rm.total} 项`))
         : null));
 
   const head = h("div", { class: "panel" },
@@ -271,7 +299,8 @@ function renderWorkspace() {
   $app.append(head);
   if (state.tab === "align") renderAlignTab();
   else if (state.tab === "citations") renderCitationsTab();
-  else renderMigrationsTab();
+  else if (state.tab === "migrations") renderMigrationsTab();
+  else renderMatrixTab();
 }
 
 // ---------------- 对齐 Tab ----------------
@@ -731,6 +760,215 @@ function renderMigCard(it) {
       h("div", { class: "explain mig-basis" }, h("b", {}, "映射依据："), it.mapping_basis)));
 }
 
+// ---------------- 责任矩阵 Tab ----------------
+
+function filteredRmItems() {
+  const items = state.rm ? state.rm.items : [];
+  const kw = state.rmKw.trim().toLowerCase();
+  return items.filter(it => {
+    if (state.rmStatus && it.judgment !== state.rmStatus) return false;
+    if (state.rmModal) {
+      const mods = [];
+      if (it.old) mods.push(it.old.modal);
+      if (it.new) mods.push(it.new.modal);
+      it.candidates.forEach(c => mods.push(c.modal));
+      if (!mods.includes(state.rmModal)) return false;
+    }
+    if (kw) {
+      let blob = it.group_desc + " " + it.reason + " " + it.basis + " ";
+      for (const s of [it.old, it.new, ...it.candidates]) {
+        if (s) blob += `${s.subject || ""} ${s.modal} ${s.action} ${s.deadline || ""} ${s.sentence} ${s.location} `;
+      }
+      if (!blob.toLowerCase().includes(kw)) return false;
+    }
+    return true;
+  });
+}
+
+function applyRmFilter() {
+  const n = filteredRmItems().length;
+  const total = state.rm ? state.rm.total : 0;
+  const el = document.getElementById("rm-visible-count");
+  if (el) el.textContent = `显示 ${n} / ${total} 项` +
+    (state.rmStatus || state.rmModal || state.rmKw.trim() ? "（已筛选）" : "");
+}
+
+function exportMatrix() {
+  const p = new URLSearchParams();
+  if (state.rmStatus) p.set("judgment", state.rmStatus);
+  if (state.rmModal) p.set("modal", state.rmModal);
+  if (state.rmKw.trim()) p.set("keyword", state.rmKw.trim());
+  const qs = p.toString();
+  window.location.href = `/api/documents/${state.doc.id}/obligations-export${qs ? "?" + qs : ""}`;
+}
+
+async function recomputeMatrix() {
+  state.rm = null;
+  await loadMatrix();
+  renderWorkspace();
+  toast("已按当前映射与两版文本重新计算责任矩阵");
+}
+
+function renderMatrixTab() {
+  if (!state.rm) {
+    $app.append(h("div", { class: "panel" },
+      h("div", { class: "empty" }, "责任矩阵计算中……")));
+    return;
+  }
+  const rm = state.rm;
+  const c = rm.counts;
+
+  const chips = [
+    { key: "", cls: "all", label: `全部 ${rm.total}` },
+    { key: "added", cls: "added", label: `新增 ${c.added}` },
+    { key: "removed", cls: "removed", label: `移除 ${c.removed}` },
+    { key: "strengthened", cls: "strengthened", label: `加强 ${c.strengthened}` },
+    { key: "weakened", cls: "weakened", label: `弱化 ${c.weakened}` },
+    { key: "relaxed", cls: "relaxed", label: `禁止放宽 ${c.relaxed}` },
+    { key: "changed", cls: "changed", label: `内容变化 ${c.changed}` },
+    { key: "review", cls: "review", label: `待核验 ${c.review}` },
+  ].map(x => h("span", {
+    class: `chip clickable rm-chip ${x.cls} ${state.rmStatus === x.key ? "" : "off"}`,
+    onclick: () => { state.rmStatus = x.key; renderWorkspace(); },
+  }, h("span", { class: "dot" }), x.label));
+
+  const panel = h("div", { class: "panel tab-panel" },
+    h("div", { class: "cit-headline" },
+      h("div", {},
+        h("b", {}, `责任矩阵（旧版义务 ${rm.n_old_obligations} 项 · 新版义务 ${rm.n_new_obligations} 项）`),
+        h("div", { class: "hint" },
+          `按公开规则提取“主体＋应当/必须/不得/可以＋行为＋时限”，仅在 1:1 映射组内配对`
+          + `（${rm.groups_paired} 组）；拆分/合并组 ${rm.groups_skipped} 个不强行配对。`
+          + `已配对 ${rm.matched_pairs} 对，其中 ${rm.unchanged_pairs} 对两版一致（未变化，不列入矩阵）。`)),
+      h("div", { class: "actions", style: "margin:0" },
+        h("button", { class: "btn sm", onclick: recomputeMatrix }, "↻ 重新计算"),
+        h("button", { class: "btn primary sm", onclick: exportMatrix }, "⬇ 导出 CSV"))),
+    h("div", { class: "stats" },
+      h("span", { class: c.review + c.relaxed ? "cit-warn" : "cit-ok" },
+        c.review + c.relaxed
+          ? `　⚠ 待核验 ${c.review} 项 · 禁止放宽 ${c.relaxed} 项，需人工确认`
+          : `　✔ 无待核验与禁止放宽项`),
+      chips),
+    h("div", { class: "toolbar" },
+      h("input", {
+        type: "text", placeholder: "搜索主体 / 行为 / 时限 / 依据…", value: state.rmKw,
+        oninput: (e) => { state.rmKw = e.target.value; applyRmFilter(); },
+      }),
+      h("select", {
+        onchange: (e) => { state.rmModal = e.target.value; renderWorkspace(); },
+      },
+        h("option", { value: "" }, "全部情态词"),
+        ...(rm.modals || []).map(m => h("option", {
+          value: m, selected: state.rmModal === m,
+        }, m))),
+      h("span", { class: "foot-label", id: "rm-visible-count" })));
+
+  const list = h("div", { id: "matrix-list" });
+  filteredRmItems().forEach(it => list.appendChild(renderRmCard(it)));
+  if (!list.children.length) {
+    list.append(h("div", { class: "empty" },
+      "当前筛选条件下没有责任矩阵记录（两版文本中未提取到义务项，或均被过滤）"));
+  }
+  $app.append(panel, list);
+  applyRmFilter();
+}
+
+function rmObField(k, v) {
+  return h("div", { class: "ob-field" },
+    h("span", { class: "ob-k" }, k),
+    h("span", { class: "ob-v" }, v));
+}
+
+// 单个义务项展示盒：主体 / 情态 / 行为 / 时限 + 依据句
+function renderRmOb(ob, cls) {
+  return h("div", { class: `text-box ob-box ${cls}` },
+    h("h4", {}, ob.location),
+    h("div", { class: "ob-fields" },
+      rmObField("主体", ob.subject
+        ? ob.subject + (ob.subject_inherited ? "（承前）" : "")
+        : "（缺失）"),
+      rmObField("情态", ob.modal),
+      rmObField("行为", ob.action || "—"),
+      rmObField("时限", ob.deadline || "—")),
+    h("div", { class: "ob-sent" }, "依据：" + ob.sentence));
+}
+
+function renderRmCard(it) {
+  const headSubject = it.old && it.new
+    ? `${it.old.subject || "（主体缺失）"} → ${it.new.subject || "（主体缺失）"}`
+    : it.old ? (it.old.subject || "（主体缺失）")
+      : it.new ? (it.new.subject || "（主体缺失）") : "";
+  const modalText = it.old && it.new && it.old.modal !== it.new.modal
+    ? `${it.old.modal} → ${it.new.modal}`
+    : it.old ? it.old.modal : (it.new ? it.new.modal : "");
+
+  const oldBox = it.old
+    ? renderRmOb(it.old, "old")
+    : h("div", { class: "text-box empty-box" }, h("h4", {}, "旧版 · 无对应义务项"),
+        it.judgment === "added" ? "（新版新增义务）" : "（无）");
+  const newBox = it.new
+    ? renderRmOb(it.new, "new")
+    : h("div", { class: "text-box empty-box" }, h("h4", {}, "新版 · 无对应义务项"),
+        it.judgment === "removed" ? "（新版已移除）" : "（无）");
+
+  const candBox = it.candidates.length
+    ? h("div", { class: "ob-cands" },
+        h("b", {}, `候选 ${it.candidates.length} 项（按规则不强行匹配，供人工核验）：`),
+        ...it.candidates.map(cd => renderRmOb(cd, cd.side === "旧" ? "old" : "new")))
+    : null;
+
+  return h("div", { class: `align-card rm-card ${it.judgment}` },
+    h("div", { class: "card-head" },
+      h("span", { class: `cite-badge rm-badge ${it.judgment}` }, RM_JUDGMENT_LABEL[it.judgment]),
+      h("span", { class: "cite-mention" }, headSubject),
+      modalText ? h("span", { class: "cite-type" }, modalText) : null,
+      h("span", { class: "cite-type" }, it.group_desc),
+      it.score != null ? h("span", { class: "cite-type" }, `配对分 ${it.score.toFixed(2)}`) : null,
+      h("span", { class: "spacer" }),
+      (it.old || it.new)
+        ? h("button", { class: "btn sm", onclick: () => openRmEvidence(it) }, "查看两版依据原文")
+        : null),
+    h("div", { class: "card-body" },
+      h("div", { class: "explain" }, h("b", {}, "判定："), it.reason),
+      h("div", { class: "side-by-side" }, oldBox, newBox),
+      candBox,
+      h("div", { class: "explain mig-basis" }, h("b", {}, "配对依据："), it.basis)));
+}
+
+// 依据原文模态框：两版所在段落全文，义务句高亮
+function openRmEvidence(it) {
+  const root = document.getElementById("modal-root");
+  const close = () => { root.innerHTML = ""; };
+
+  const boxes = [];
+  if (it.old) {
+    const text = state.rm.old_paragraphs[it.old.para_idx] || "";
+    boxes.push(h("div", { class: "text-box old" },
+      h("h4", {}, `旧版依据原文 · ${it.old.location}`),
+      h("div", { class: "cite-quote" }, highlightMention(text, it.old.start, it.old.end))));
+  }
+  if (it.new) {
+    const text = state.rm.new_paragraphs[it.new.para_idx] || "";
+    boxes.push(h("div", { class: "text-box new" },
+      h("h4", {}, `新版依据原文 · ${it.new.location}`),
+      h("div", { class: "cite-quote" }, highlightMention(text, it.new.start, it.new.end))));
+  }
+
+  const modal = h("div", { class: "modal-mask", onclick: (e) => { if (e.target === e.currentTarget) close(); } },
+    h("div", { class: "modal" },
+      h("div", { class: "modal-head" },
+        h("h3", {}, "责任矩阵依据原文 · ",
+          h("span", { class: `cite-badge rm-badge ${it.judgment}` }, RM_JUDGMENT_LABEL[it.judgment])),
+        h("button", { class: "close-x", onclick: close }, "✕")),
+      h("div", { class: "modal-body" },
+        h("p", { class: "hint", style: "margin-top:0" },
+          it.group_desc + "　|　判定说明：" + it.reason),
+        h("div", { class: "side-by-side" }, ...boxes)),
+      h("div", { class: "modal-foot" },
+        h("button", { class: "btn primary", onclick: close }, "关闭"))));
+  root.append(modal);
+}
+
 function applyListFilter() {
   const kw = state.search.trim().toLowerCase();
   let n = 0;
@@ -849,6 +1087,10 @@ async function removeAlignment(id) {
   try {
     await api(`/api/documents/${state.doc.id}/alignments/${id}`, { method: "DELETE" });
     state.doc.alignments = state.doc.alignments.filter(a => a.id !== id);
+    state.mig = null;   // 映射变化：迁移核验与责任矩阵下次查看时即时重算
+    state.rm = null;
+    if (state.tab === "migrations") await loadMigrations();
+    if (state.tab === "matrix") await loadMatrix();
     renderWorkspace();
     toast("已删除");
   } catch (e) { toast(e.message, true); }

@@ -21,6 +21,7 @@ from .aligner import align, manual_record, split_paragraphs
 from .citations import REF_TYPE_LABEL, scan_citations
 from .database import db, citation_row_to_dict, indices_to_str, row_to_dict
 from .migration import MIGRATION_STATUS_LABEL, analyze_migration
+from .obligations import JUDGMENT_LABEL, MODALS, analyze_obligations
 from .schemas import (
     AlignmentCreate,
     AlignmentPatch,
@@ -625,6 +626,147 @@ def export_citation_migrations(
         ])
     data = b"\xef\xbb\xbf" + buf.getvalue().encode("utf-8")
     fname = f"regreview-citation-migrations-{doc_id}-{stamp}.csv"
+    return Response(content=data, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f"attachment; filename={fname}"})
+
+
+# ---------------- 责任矩阵 ----------------
+
+def _obligation_result(conn, doc_id: int) -> dict:
+    """即时计算责任矩阵（映射调整后再次调用即自动重算）。"""
+    old, new = _load_paragraphs(conn, doc_id)
+    aligns = [row_to_dict(r) for r in conn.execute(
+        "SELECT * FROM alignments WHERE document_id=? ORDER BY id", (doc_id,)
+    ).fetchall()]
+    return analyze_obligations(old, new, aligns)
+
+
+def _filter_obligation_items(items: list[dict], judgment: str | None,
+                             modal: str | None, keyword: str | None) -> list[dict]:
+    kw = keyword.strip().lower() if keyword else ""
+    out = []
+    for it in items:
+        if judgment and it["judgment"] != judgment:
+            continue
+        if modal:
+            modals = {c["modal"] for c in it["candidates"]}
+            if it["old"]:
+                modals.add(it["old"]["modal"])
+            if it["new"]:
+                modals.add(it["new"]["modal"])
+            if modal not in modals:
+                continue
+        if kw:
+            blob = [it["group_desc"], it["reason"], it["basis"]]
+            for s in (it["old"], it["new"], *it["candidates"]):
+                if s:
+                    blob += [s["subject"] or "", s["modal"], s["action"],
+                             s["deadline"] or "", s["sentence"], s["location"]]
+            if kw not in " ".join(blob).lower():
+                continue
+        out.append(it)
+    return out
+
+
+_OBLIGATION_JUDGMENT_PATTERN = "^(added|removed|strengthened|weakened|relaxed|changed|review)$"
+_OBLIGATION_MODAL_PATTERN = "^(应当|必须|不得|可以)$"
+
+
+@app.get("/api/documents/{doc_id}/obligations")
+def list_obligations(
+    doc_id: int,
+    judgment: str | None = Query(None, pattern=_OBLIGATION_JUDGMENT_PATTERN),
+    modal: str | None = Query(None, pattern=_OBLIGATION_MODAL_PATTERN),
+    keyword: str | None = None,
+):
+    """责任矩阵列表（即时计算）。
+
+    按公开规则从两版条款提取“主体＋应当/必须/不得/可以＋行为＋时限”义务项，
+    仅在 1:1 段落映射组内按主体与行为相似度配对；拆分/合并映射、主体缺失、
+    候选并列一律不强行匹配，列为待核验并展示候选。判定：新增 / 移除 /
+    加强 / 弱化 / 禁止放宽 / 内容变化 / 待核验。
+    """
+    with db() as conn:
+        doc = _get_doc_or_404(conn, doc_id)
+        result = _obligation_result(conn, doc_id)
+        old_paras = [r[0] for r in conn.execute(
+            "SELECT content FROM paragraphs WHERE document_id=? AND side='old' ORDER BY idx",
+            (doc_id,)).fetchall()]
+        new_paras = [r[0] for r in conn.execute(
+            "SELECT content FROM paragraphs WHERE document_id=? AND side='new' ORDER BY idx",
+            (doc_id,)).fetchall()]
+    items = _filter_obligation_items(result["items"], judgment, modal, keyword)
+    return {
+        "document_id": doc_id,
+        "title": doc["title"],
+        "counts": result["counts"],
+        "total": result["total"],
+        "unchanged_pairs": result["unchanged_pairs"],
+        "matched_pairs": result["matched_pairs"],
+        "groups_paired": result["groups_paired"],
+        "groups_skipped": result["groups_skipped"],
+        "n_old_obligations": result["n_old_obligations"],
+        "n_new_obligations": result["n_new_obligations"],
+        "judgment_labels": result["judgment_labels"],
+        "modals": result["modals"],
+        "old_paragraphs": old_paras,
+        "new_paragraphs": new_paras,
+        "items": items,
+    }
+
+
+@app.get("/api/documents/{doc_id}/obligations-export")
+def export_obligations(
+    doc_id: int,
+    judgment: str | None = Query(None, pattern=_OBLIGATION_JUDGMENT_PATTERN),
+    modal: str | None = Query(None, pattern=_OBLIGATION_MODAL_PATTERN),
+    keyword: str | None = None,
+):
+    """导出责任矩阵 CSV（UTF-8 BOM，Excel 可直接打开）。
+
+    默认全量导出，可按判定 / 情态词 / 关键字筛选；每行含两版义务项
+    （主体、情态词、行为、时限、依据原文）、候选、判定说明与配对依据。
+    """
+    with db() as conn:
+        _get_doc_or_404(conn, doc_id)
+        result = _obligation_result(conn, doc_id)
+    rows = _filter_obligation_items(result["items"], judgment, modal, keyword)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "序号", "判定", "映射组", "配对分值",
+        "旧版位置", "旧版主体", "旧版情态词", "旧版行为", "旧版时限", "旧版依据原文",
+        "新版位置", "新版主体", "新版情态词", "新版行为", "新版时限", "新版依据原文",
+        "候选（未强行匹配）", "判定说明", "配对依据",
+    ])
+
+    def side_cells(ob: dict | None) -> list[str]:
+        if ob is None:
+            return ["", "", "", "", "", ""]
+        return [ob["location"], ob["subject"] or "（缺失）", ob["modal"],
+                ob["action"], ob["deadline"] or "", ob["sentence"]]
+
+    for i, it in enumerate(rows, 1):
+        cands = "\n---\n".join(
+            f"[{c['side']}版｜{c['location']}]\n"
+            f"{c['subject'] or '（主体缺失）'}＋{c['modal']}＋{c['action']}"
+            + (f"＋时限「{c['deadline']}」" if c["deadline"] else "")
+            + f"\n{c['sentence']}"
+            for c in it["candidates"])
+        writer.writerow([
+            i,
+            JUDGMENT_LABEL[it["judgment"]],
+            it["group_desc"],
+            "" if it["score"] is None else f"{it['score']:.2f}",
+            *side_cells(it["old"]),
+            *side_cells(it["new"]),
+            cands,
+            it["reason"],
+            it["basis"],
+        ])
+    data = b"\xef\xbb\xbf" + buf.getvalue().encode("utf-8")
+    fname = f"regreview-obligations-{doc_id}-{stamp}.csv"
     return Response(content=data, media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
 

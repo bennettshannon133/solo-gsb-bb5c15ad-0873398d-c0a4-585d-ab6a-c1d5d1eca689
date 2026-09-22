@@ -413,3 +413,55 @@ textarea { resize: vertical; min-height: 260px; font-family: ui-monospace, "SFMo
   .mig-grid { grid-template-columns: 1fr; }
 }
 
+/* ---------- 责任矩阵 ---------- */
+:root {
+  --rose: #9f1239;
+  --rose-soft: #fff1f2;
+}
+
+.chip.rm-chip.all { background: var(--unchanged-soft); color: var(--unchanged); }
+.chip.rm-chip.added { background: var(--new-soft); color: var(--new); }
+.chip.rm-chip.removed { background: var(--old-soft); color: var(--old); }
+.chip.rm-chip.strengthened { background: var(--blue-soft); color: var(--blue); }
+.chip.rm-chip.weakened { background: var(--warn-soft); color: var(--warn); }
+.chip.rm-chip.relaxed { background: var(--rose-soft); color: var(--rose); }
+.chip.rm-chip.changed { background: var(--purple-soft); color: var(--purple); }
+.chip.rm-chip.review { background: var(--multi-soft); color: var(--multi); }
+
+.rm-card.added { border-left-color: var(--new); }
+.rm-card.removed { border-left-color: var(--old); }
+.rm-card.strengthened { border-left-color: var(--blue); }
+.rm-card.weakened { border-left-color: var(--warn); }
+.rm-card.relaxed { border-left-color: var(--rose); }
+.rm-card.changed { border-left-color: var(--purple); }
+.rm-card.review { border-left-color: var(--multi); }
+
+.cite-badge.rm-badge.added { background: var(--new-soft); color: var(--new); }
+.cite-badge.rm-badge.removed { background: var(--old-soft); color: var(--old); }
+.cite-badge.rm-badge.strengthened { background: var(--blue-soft); color: var(--blue); }
+.cite-badge.rm-badge.weakened { background: var(--warn-soft); color: var(--warn); }
+.cite-badge.rm-badge.relaxed { background: var(--rose-soft); color: var(--rose); }
+.cite-badge.rm-badge.changed { background: var(--purple-soft); color: var(--purple); }
+.cite-badge.rm-badge.review { background: var(--multi-soft); color: var(--multi); }
+
+.ob-box { padding: 10px 12px; }
+.ob-box h4 { font-size: 12px; margin-bottom: 6px; }
+.ob-fields { display: grid; gap: 4px; margin-bottom: 8px; }
+.ob-field { display: flex; gap: 8px; font-size: 12.5px; align-items: baseline; }
+.ob-k {
+  flex: 0 0 34px; font-weight: 700; color: var(--muted); font-size: 12px;
+}
+.ob-v { word-break: break-word; }
+.ob-sent {
+  border-top: 1px dashed var(--border); padding-top: 6px;
+  font-size: 12.5px; color: var(--muted);
+  white-space: pre-wrap; word-break: break-word;
+}
+.ob-cands {
+  margin-top: 12px; border-top: 1px dashed var(--border); padding-top: 10px;
+  display: grid; gap: 8px;
+}
+.ob-cands > b { font-size: 12.5px; color: var(--warn); }
+.ob-cands .ob-box { background: var(--warn-soft); border-color: #fde68a; }
+
+
